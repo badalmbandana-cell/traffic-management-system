@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+*.pt
+data/sample_videos/*.mp4
+data/sample_videos/*.avi
+output/
+.pytest_cache/
+.env

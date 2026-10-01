@@ -1,0 +1,33 @@
+# Render Blueprint - deploys BOTH services from this one repo in one click.
+# On Render: New -> Blueprint -> connect this GitHub repo -> Apply.
+#
+# Free tier notes (read before relying on this for anything beyond a demo):
+#   - Free web services SPIN DOWN after ~15 min of no traffic and take
+#     10-30s to wake back up on the next request. Fine for a portfolio demo
+#     link; not fine for anything needing instant real-time response.
+#   - Free tier has NO persistent disk - traffic_logs.db and auth_users.db
+#     (and any created accounts / logged cycles) reset on every redeploy or
+#     restart. Add a paid persistent disk (a few $/month) under each
+#     service's "Disks" tab if you need logs/accounts to survive restarts.
+services:
+  - type: web
+    name: traffic-management-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile.backend
+    plan: free
+    envVars:
+      - key: TMS_JWT_SECRET
+        generateValue: true   # Render generates a real random secret for you
+    healthCheckPath: /health
+
+  - type: web
+    name: traffic-management-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile.dashboard
+    plan: free
+    envVars:
+      - key: TMS_API_BASE
+        fromService:
+          name: traffic-management-backend
+          type: web
+          property: hostport   # Render auto-fills the backend's real public URL here

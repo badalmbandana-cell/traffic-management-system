@@ -1,0 +1,15 @@
+# Dashboard (Streamlit) - production container. Talks to the backend over
+# HTTP via TMS_API_BASE (set this to the backend's public URL when deployed).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PORT=8501
+EXPOSE 8501
+
+CMD ["sh", "-c", "streamlit run dashboard/app.py --server.port ${PORT} --server.address 0.0.0.0 --server.headless true"]

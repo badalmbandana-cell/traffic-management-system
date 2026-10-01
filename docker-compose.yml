@@ -1,0 +1,36 @@
+# Local multi-container run: `docker compose up --build`
+# Backend on :8000, dashboard on :8501, talking to each other over the
+# compose network. This is for LOCAL testing of the containerized setup -
+# see README's "Deploy it for real" section for actual cloud deployment.
+version: "3.9"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - TMS_JWT_SECRET=${TMS_JWT_SECRET:-change-me-before-real-use}
+      - PORT=8000
+    volumes:
+      - traffic_data:/app/database
+      - auth_data:/app/auth
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - TMS_API_BASE=http://backend:8000
+      - PORT=8501
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  traffic_data:
+  auth_data:
