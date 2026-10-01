@@ -13,7 +13,9 @@ Run it with:  streamlit run dashboard/app.py
 from __future__ import annotations
 
 import os
+import tempfile
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -24,6 +26,18 @@ LANE_IDS = ["north", "south", "east", "west"]
 STATE_COLOR = {"GREEN": "#22c55e", "YELLOW": "#eab308", "RED": "#ef4444"}
 
 st.set_page_config(page_title="Traffic Management Dashboard", layout="wide")
+
+
+@st.cache_resource(show_spinner=False)
+def get_detector():
+    """
+    Loads YOLOv8 ONCE per running container and reuses it across every
+    video a user uploads (model load alone took ~39s in testing - doing
+    that on every upload would make the feature unusably slow). The first
+    upload after a fresh deploy/restart will still pay this cost.
+    """
+    from detection.vehicle_detector import VehicleDetector
+    return VehicleDetector("yolov8n.pt", confidence_threshold=0.4)
 
 
 def api_get(path: str, **kwargs):
@@ -219,6 +233,60 @@ if current:
                 f"(vehicles counted: {last_cycle['vehicle_count']}).{tag}")
 
 st.divider()
+
+if can_control:
+    st.subheader("\U0001F3A5 Upload a traffic video — real YOLOv8 detection")
+    st.caption(
+        "Runs real vehicle detection on the video you upload and feeds the counts into the "
+        "signal logic above. **This host has limited CPU/RAM** (free-tier hosting) — keep clips "
+        "short. The YOLO model takes ~30-60s to load on its very first use after a restart; "
+        "after that it's cached and each frame takes roughly 1-2 seconds on CPU."
+    )
+    uploaded = st.file_uploader("Video file (mp4/avi, keep it short — a few seconds is enough)",
+                                 type=["mp4", "avi", "mov"])
+    max_frames = st.slider("Frames to analyze", min_value=3, max_value=20, value=8,
+                            help="More frames = more accurate but slower and more likely to time out "
+                                 "or run out of memory on a free-tier host.")
+    if uploaded is not None and st.button("Analyze video", type="primary"):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = str(Path(tmpdir) / uploaded.name)
+            with open(video_path, "wb") as f:
+                f.write(uploaded.getbuffer())
+
+            status = st.empty()
+            try:
+                status.info("Loading YOLOv8 model (first run after a restart can take ~30-60s)...")
+                detector = get_detector()
+                status.info(f"Running detection on up to {max_frames} frames...")
+                from dashboard.video_processor import process_uploaded_video
+                t0 = time.time()
+                video_counts, annotated_frame, frames_done = process_uploaded_video(
+                    video_path, LANE_IDS, detector, max_frames=max_frames,
+                )
+                elapsed = time.time() - t0
+                status.empty()
+
+                import cv2
+                st.image(cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
+                          caption=f"Last analyzed frame — {frames_done} frame(s) processed in {elapsed:.1f}s")
+                st.write("Detected per-lane vehicle counts (summed across analyzed frames):")
+                st.bar_chart(pd.Series(video_counts, name="vehicles"))
+
+                _, err = api_post("/detection/update", json={"lane_counts": video_counts})
+                if err:
+                    st.error(f"Detected counts, but failed to send to signal system: {err}")
+                else:
+                    st.success("Counts sent to the signal system — click 'Run signal cycle' in the sidebar "
+                               "to see it decide based on this real detection.")
+            except Exception as exc:  # noqa: BLE001 - surface OOM/timeout/decode errors plainly
+                status.empty()
+                st.error(
+                    f"Video analysis failed: {exc}\n\n"
+                    f"On a free-tier host this is usually memory or time limits — try a shorter "
+                    f"video, fewer frames, or a smaller resolution clip."
+                )
+    st.divider()
+
 col1, col2 = st.columns([1, 1])
 
 with col1:
