@@ -40,29 +40,52 @@ def get_detector():
     return VehicleDetector("yolov8n.pt", confidence_threshold=0.4)
 
 
-def api_get(path: str, **kwargs):
+# Free-tier hosts (Render etc.) spin the backend down after inactivity and
+# it can take 20-40s to wake back up on the next request. A short timeout
+# here would misreport "backend unreachable" during that wake-up window,
+# when the backend is actually fine - just still booting. We use a longer
+# timeout and one retry with a clear "waking up" message instead.
+COLD_START_TIMEOUT = 45
+WAKE_UP_HINT = (
+    "The backend may just be waking up from sleep (free-tier hosting spins "
+    "it down after inactivity - this can take up to ~30-40s). Wait a bit and "
+    "click refresh, or try the action again."
+)
+
+
+def api_get(path: str, retry: bool = True, **kwargs):
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {st.session_state.token}"
     try:
-        r = requests.get(f"{API_BASE}{path}", headers=headers, timeout=3, **kwargs)
+        r = requests.get(f"{API_BASE}{path}", headers=headers, timeout=COLD_START_TIMEOUT, **kwargs)
         if r.status_code == 401:
             st.session_state.token = None
             st.rerun()
         r.raise_for_status()
         return r.json(), None
+    except requests.exceptions.ConnectionError as exc:
+        if retry:
+            time.sleep(3)  # gives a just-waking backend a moment, then one retry
+            return api_get(path, retry=False, headers=headers, **kwargs)
+        return None, f"{exc}\n\n{WAKE_UP_HINT}"
     except Exception as exc:  # noqa: BLE001
         return None, str(exc)
 
 
-def api_post(path: str, json=None):
+def api_post(path: str, json=None, retry: bool = True):
     headers = {"Authorization": f"Bearer {st.session_state.token}"}
     try:
-        r = requests.post(f"{API_BASE}{path}", json=json, headers=headers, timeout=3)
+        r = requests.post(f"{API_BASE}{path}", json=json, headers=headers, timeout=COLD_START_TIMEOUT)
         if r.status_code == 401:
             st.session_state.token = None
             st.rerun()
         r.raise_for_status()
         return r.json(), None
+    except requests.exceptions.ConnectionError as exc:
+        if retry:
+            time.sleep(3)
+            return api_post(path, json=json, retry=False)
+        return None, f"{exc}\n\n{WAKE_UP_HINT}"
     except Exception as exc:  # noqa: BLE001
         detail = None
         try:
@@ -102,12 +125,23 @@ if not st.session_state.token:
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in", type="primary")
     if submitted:
-        try:
-            r = requests.post(f"{API_BASE}/auth/login",
-                               data={"username": username, "password": password}, timeout=5)
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Backend unreachable: {exc}\n\nStart it with: uvicorn backend.main:app --reload")
-            st.stop()
+        r = None
+        for attempt in range(2):
+            try:
+                if attempt == 1:
+                    st.info("Backend is waking up (free-tier hosting sleeps when idle) — retrying...")
+                r = requests.post(f"{API_BASE}/auth/login",
+                                   data={"username": username, "password": password},
+                                   timeout=COLD_START_TIMEOUT)
+                break
+            except requests.exceptions.ConnectionError as exc:
+                if attempt == 1:
+                    st.error(f"Backend unreachable after retrying: {exc}\n\n{WAKE_UP_HINT}")
+                    st.stop()
+                time.sleep(3)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Backend unreachable: {exc}")
+                st.stop()
         if r.status_code == 200:
             data = r.json()
             st.session_state.token = data["access_token"]
